@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -16,6 +16,81 @@ from aistudio_api.application.account_rotator import AccountRotator, AccountStat
 from aistudio_api.application.account_service import AccountService
 from aistudio_api.infrastructure.account.account_store import AccountMeta, AccountStore
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
+from aistudio_api.infrastructure.gateway.session import BrowserSession
+
+
+@pytest.mark.parametrize("model", [None, "gemini-3.8-flash", "models/gemini-3.8-flash"])
+def test_newly_imported_account_is_available_without_usage_history(tmp_path, model):
+    """运行期间新增的凭据默认可调度，零调用记录不代表冷却或失效。"""
+    store = AccountStore(accounts_dir=tmp_path / "accounts")
+    rotator = AccountRotator(account_store=store)
+    account = store.save_account(
+        name="New Account", email=None, storage_state={"cookies": []}
+    )
+
+    assert rotator.get_account_stats(account.id) is None
+    assert rotator.is_account_available(account.id, model=model)
+    assert rotator.get_all_stats()[account.id]["is_available"] is True
+    assert rotator.get_all_stats()[account.id]["requests"] == 0
+
+
+def test_unknown_account_is_not_available(tmp_path):
+    """默认可调度只适用于已登记的凭据，不适用于不存在的账号。"""
+    store = AccountStore(accounts_dir=tmp_path / "accounts")
+    rotator = AccountRotator(account_store=store)
+
+    assert not rotator.is_account_available("missing_account", model="gemini-3.8-flash")
+
+
+@pytest.mark.asyncio
+async def test_first_request_keeps_manually_activated_new_account(
+    tmp_path, monkeypatch
+):
+    """手动激活运行期间导入的第二份凭据后，首次请求不应凭空切回旧账号。"""
+    store = AccountStore(accounts_dir=tmp_path / "accounts")
+    service = AccountService(account_store=store)
+    service.save_account_from_cookies(
+        name="First Account", email=None, storage_state={"cookies": []}
+    )
+    rotator = AccountRotator(account_store=store)
+    second = service.save_account_from_cookies(
+        name="Second Account", email=None, storage_state={"cookies": []}
+    )
+    browser_session = MagicMock(spec=BrowserSession)
+    await service.activate_account(second.id, browser_session)
+    switch_account = AsyncMock()
+    monkeypatch.setattr(runtime_state, "rotator", rotator)
+    monkeypatch.setattr(runtime_state, "account_service", service)
+    monkeypatch.setattr(
+        "aistudio_api.application.account_orchestrator.try_switch_account",
+        switch_account,
+    )
+
+    assert rotator.get_account_stats(second.id) is None
+    await ensure_active_account(attempt=0, model="models/gemini-3.8-flash")
+
+    switch_account.assert_not_awaited()
+    assert service.get_active_account() == second
+    browser_session.switch_auth.assert_awaited_once()
+
+
+@pytest.mark.parametrize("failure", ["rate_limited", "auth_error", "session_expired"])
+def test_new_account_respects_recorded_failures(tmp_path, failure):
+    """新凭据默认可用，但实际记录的 429、鉴权异常和登录失效仍应阻止调度。"""
+    store = AccountStore(accounts_dir=tmp_path / "accounts")
+    rotator = AccountRotator(account_store=store)
+    account = store.save_account(
+        name="New Account", email=None, storage_state={"cookies": []}
+    )
+    if failure == "rate_limited":
+        rotator.record_rate_limited(account.id, model="gemini-3.8-flash")
+        assert rotator.is_account_available(account.id, model="gemini-2.5-pro")
+    elif failure == "auth_error":
+        rotator.record_auth_error(account.id, model="gemini-3.8-flash")
+    else:
+        rotator.record_session_expired(account.id, model="gemini-3.8-flash")
+
+    assert not rotator.is_account_available(account.id, model="models/gemini-3.8-flash")
 
 
 @pytest.mark.asyncio

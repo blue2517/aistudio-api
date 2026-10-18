@@ -485,9 +485,11 @@ class AccountRotator:
         return self._stats.get(account_id)
 
     def is_account_available(self, account_id: str, model: str | None = None) -> bool:
-        """检查指定账号在特定模型下是否健康可用。"""
+        """按实际冷却或失效记录判断；已登记但尚无调用记录的账号默认可用。"""
         stats = self.get_account_stats(account_id)
-        return bool(stats and stats.is_available(model))
+        if stats is None:
+            return self._store.get_account(account_id) is not None
+        return stats.is_available(model)
 
     def _get_available_accounts(
         self, model: str | None = None, *, ignore_auth_cooldown: bool = False
