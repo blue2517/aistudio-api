@@ -106,21 +106,3 @@ def is_transient_rpc_error(exc: Exception) -> bool:
         err = str(exc).lower()
         return "ambiguous request for service" in err and "generatecontent" in err
     return False
-
-
-def is_browser_session_hang_error(exc: Exception) -> bool:
-    """识别由于 CDP 断开、模板捕获超时或 BotGuard 握手未就绪引起的会话挂起异常。"""
-    if isinstance(exc, (RuntimeError, TimeoutError)):
-        err = str(exc).lower()
-        return any(
-            k in err
-            for k in (
-                "template capture",
-                "botguard",
-                "timeout",
-                "cdp",
-                "closed",
-                "aborted",
-            )
-        )
-    return False

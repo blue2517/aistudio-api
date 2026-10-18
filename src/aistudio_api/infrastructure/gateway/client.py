@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import ClassVar
@@ -18,7 +19,10 @@ from aistudio_api.infrastructure.gateway.capture import (
     CapturedRequest,
     RequestCaptureService,
 )
-from aistudio_api.infrastructure.gateway.model_defaults import resolve_model_defaults
+from aistudio_api.infrastructure.gateway.model_defaults import (
+    get_configured_request_timeouts,
+    resolve_model_defaults,
+)
 from aistudio_api.infrastructure.gateway.replay import RequestReplayService
 from aistudio_api.infrastructure.gateway.session import BrowserSession
 from aistudio_api.infrastructure.gateway.streaming import StreamingGateway
@@ -156,7 +160,7 @@ class AIStudioClient:
             force_refresh=force_refresh,
         )
 
-    async def replay(self, body: str, timeout: int = 120) -> tuple[int, bytes]:
+    async def replay(self, body: str, timeout: int | None = None) -> tuple[int, bytes]:
         return await self._replay_service.replay(
             self._captured, body=body, timeout=timeout
         )
@@ -180,7 +184,11 @@ class AIStudioClient:
         sanitize_plain_text: bool = True,
         force_refresh_capture: bool = False,
     ):
-        async with self._session.request_scope():
+        timeout_s = get_configured_request_timeouts().timeout_stream
+        async with (
+            asyncio.timeout(timeout_s),
+            self._session.request_scope(),
+        ):
             captured = await self.capture_request(
                 prompt=capture_prompt,
                 model=model,
@@ -203,6 +211,7 @@ class AIStudioClient:
             async for event in self._streaming_gateway.stream_chat(
                 captured=captured,
                 model=model,
+                timeout_s=timeout_s,
             ):
                 yield event
 
@@ -224,7 +233,11 @@ class AIStudioClient:
         generation_config_overrides: dict | None = None,
         sanitize_plain_text: bool = True,
     ) -> ModelOutput:
-        async with self._session.request_scope():
+        timeout_s = get_configured_request_timeouts().timeout_replay
+        async with (
+            asyncio.timeout(timeout_s),
+            self._session.request_scope(),
+        ):
             logger.info("拦截请求: %r", f"{capture_prompt[:20]}...")
             captured = await self.capture_request(
                 prompt=capture_prompt,
@@ -248,7 +261,7 @@ class AIStudioClient:
             modified_body = captured.body
 
             status, raw = await self._replay_service.replay(
-                captured, body=modified_body
+                captured, body=modified_body, timeout=timeout_s
             )
             raw_text = raw.decode("utf-8", errors="replace")
             self._dump_raw_exchange(
@@ -281,7 +294,11 @@ class AIStudioClient:
         images: list[str | tuple[str, str]] | None = None,
         contents: list[AistudioContent] | None = None,
     ) -> ModelOutput:
-        async with self._session.request_scope():
+        timeout_s = get_configured_request_timeouts().timeout_replay
+        async with (
+            asyncio.timeout(timeout_s),
+            self._session.request_scope(),
+        ):
             logger.info(
                 "生图请求: %r, images=%s",
                 f"{prompt[:20]}...",
@@ -326,7 +343,7 @@ class AIStudioClient:
 
             modified_body = captured.body
             status, raw = await self._replay_service.replay(
-                captured, body=modified_body, timeout=120
+                captured, body=modified_body, timeout=timeout_s
             )
             raw_text = raw.decode("utf-8", errors="replace")
             self._dump_raw_exchange(

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from aistudio_api.api.dependencies import get_runtime_state
 from aistudio_api.api.response_models import (
@@ -17,7 +17,9 @@ from aistudio_api.api.response_models import (
     StatsTotalsResponse,
 )
 from aistudio_api.infrastructure.gateway.model_defaults import (
+    RequestTimeoutConfig,
     _resolve_config_path,
+    get_configured_request_timeouts,
     invalidate_config_cache,
 )
 from aistudio_api.infrastructure.utils.logger import get_logger
@@ -210,6 +212,7 @@ async def get_system_config() -> dict[str, object]:
     )
 
     config_yaml_path = _resolve_config_path(None)
+    timeouts = get_configured_request_timeouts()
     yaml_content = ""
     if config_yaml_path.exists():
         with contextlib.suppress(Exception):
@@ -220,7 +223,8 @@ async def get_system_config() -> dict[str, object]:
         "browser_headless": settings.browser_headless,
         "proxy_configured": bool(settings.proxy_url),
         "auth_enabled": settings.auth_enabled,
-        "timeout_stream": settings.timeout_stream,
+        "timeout_stream": timeouts.timeout_stream,
+        "timeout_replay": timeouts.timeout_replay,
         "yaml_content": yaml_content,
         "log_level": get_log_level(),
         "dump_requests": is_dump_requests_enabled(),
@@ -240,6 +244,12 @@ async def update_config_yaml(req: ConfigYamlUpdateRequest) -> dict[str, object]:
             raise HTTPException(400, detail="YAML 顶层必须为字典结构")
     except yaml.YAMLError as e:
         raise HTTPException(400, detail=f"YAML 语法格式错误: {e}") from e
+    try:
+        RequestTimeoutConfig.model_validate(
+            parsed.get("request_timeouts", {}) if isinstance(parsed, dict) else {}
+        )
+    except ValidationError as e:
+        raise HTTPException(400, detail=f"请求超时配置无效: {e}") from e
     config_yaml_path = _resolve_config_path(None)
     try:
         config_yaml_path.write_text(req.yaml_content, encoding="utf-8")
@@ -267,6 +277,31 @@ async def update_config_yaml(req: ConfigYamlUpdateRequest) -> dict[str, object]:
         return {"ok": True, "message": "配置已保存并重载"}
     except Exception as e:
         raise HTTPException(500, detail=f"写入配置文件失败: {e}") from e
+
+
+@protected_router.put("/config/timeouts")
+async def update_request_timeouts(req: RequestTimeoutConfig) -> dict[str, object]:
+    """持久化生成请求总时限，后续请求立即使用新配置。"""
+    config_path = _resolve_config_path(None)
+    try:
+        content = (
+            config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+        )
+        parsed = yaml.safe_load(content) or {}
+        if not isinstance(parsed, dict):
+            raise HTTPException(400, detail="YAML 顶层必须为字典结构")
+        parsed["request_timeouts"] = req.model_dump()
+        config_path.write_text(
+            yaml.safe_dump(parsed, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+    except (OSError, yaml.YAMLError) as exc:
+        raise HTTPException(500, detail=f"保存请求超时配置失败: {exc}") from exc
+    invalidate_config_cache()
+    logger.info(
+        "请求总超时已更新: 流式=%ds, 非流式=%ds", req.timeout_stream, req.timeout_replay
+    )
+    return {"ok": True, **req.model_dump()}
 
 
 class LoggingConfigRequest(BaseModel):

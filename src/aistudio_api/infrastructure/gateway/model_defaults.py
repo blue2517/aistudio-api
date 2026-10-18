@@ -8,8 +8,9 @@ from functools import lru_cache
 from pathlib import Path
 
 import yaml
+from pydantic import BaseModel, Field
 
-from aistudio_api.config import resolve_config_file
+from aistudio_api.config import resolve_config_file, settings
 
 from .wire_types import (
     AistudioImageOutputMode,
@@ -26,6 +27,22 @@ _SAFETY_CATEGORY_ORDER = (
     ("sexually explicit", 9),
     ("dangerous content", 10),
 )
+
+
+class RequestTimeoutConfig(BaseModel):
+    """单次生成请求的总时限；配置文件优先，环境变量作为默认值。"""
+
+    timeout_stream: int = Field(
+        default_factory=lambda: settings.timeout_stream, strict=True, ge=1, le=86400
+    )
+    timeout_replay: int = Field(
+        default_factory=lambda: settings.timeout_replay, strict=True, ge=1, le=86400
+    )
+
+
+def get_configured_request_timeouts() -> RequestTimeoutConfig:
+    config = _load_yaml_config(_resolve_config_path(None))
+    return RequestTimeoutConfig.model_validate(config.get("request_timeouts", {}))
 
 
 @dataclass(frozen=True)

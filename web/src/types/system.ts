@@ -5,12 +5,17 @@ export interface SystemConfig {
   proxy_configured: boolean
   auth_enabled: boolean
   timeout_stream: number
+  timeout_replay: number
   yaml_content: string
   log_level?: string
   dump_requests?: boolean
   debug_env_active?: boolean
   dump_to_file?: boolean
   dump_dir?: string
+}
+export interface RequestTimeoutConfig {
+  timeout_stream: number
+  timeout_replay: number
 }
 export interface UpdateLoggingConfigRequest {
   level?: string

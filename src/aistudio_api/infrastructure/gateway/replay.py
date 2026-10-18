@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from aistudio_api.config import settings
 from aistudio_api.infrastructure.gateway.capture import CapturedRequest
+from aistudio_api.infrastructure.gateway.model_defaults import (
+    get_configured_request_timeouts,
+)
 from aistudio_api.infrastructure.gateway.session import BrowserSession
 from aistudio_api.infrastructure.utils.logger import get_logger
 
@@ -21,7 +23,7 @@ class RequestReplayService:
             return 0, b""
 
         if timeout is None:
-            timeout = settings.timeout_replay
+            timeout = get_configured_request_timeouts().timeout_replay
 
         headers = {
             k: v

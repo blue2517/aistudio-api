@@ -30,14 +30,6 @@
         doAbort();
     }, timeoutMs);
 
-    function resetTimeout() {
-        clearTimeout(timeoutId);
-        timeoutId = setTimeout(() => {
-            push({type: 'error', message: 'timeout'});
-            doAbort();
-        }, timeoutMs);
-    }
-
     function cleanup() {
         if (timeoutId) {
             clearTimeout(timeoutId);
@@ -69,7 +61,6 @@
         credentials: 'include',
         signal: abortController.signal,
     }).then(response => {
-        resetTimeout();
         push({type: 'status', status: response.status || 0});
 
         if (!response.body) {
@@ -96,7 +87,6 @@
                     return;
                 }
                 if (value) {
-                    resetTimeout();
                     const text = decoder.decode(value, {stream: true});
                     if (text) {
                         push({type: 'chunk', text: text});

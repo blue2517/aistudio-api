@@ -9,6 +9,7 @@ from collections.abc import AsyncGenerator
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
+from aistudio_api.domain.errors import RequestError
 from aistudio_api.infrastructure.account.cookie_parser import calculate_sapisid_hash
 from aistudio_api.infrastructure.browser.scripts import (
     HOOKED_REQUEST_JS,
@@ -171,12 +172,23 @@ class XHRStreamTransport:
             body=body,
             timeout_s=timeout_s,
         )
-
-        result = await page.evaluate(HOOKED_REQUEST_JS, args, timeout_s=timeout_s + 5.0)
+        rid = uuid.uuid4().hex[:8]
+        args["rid"] = rid
+        try:
+            result = await page.evaluate(
+                HOOKED_REQUEST_JS, args, timeout_s=timeout_s + 5.0
+            )
+        finally:
+            with suppress(Exception):
+                await page.evaluate(STREAM_CLEANUP_JS, rid)
         res_dict: dict[str, object] = result if isinstance(result, dict) else {}
         status = int(str(res_dict.get("status") or 0))
         raw_text = str(res_dict.get("body") or "")
         if status == 0:
+            if raw_text == "timeout":
+                raise RequestError(
+                    504, f"Generation request exceeded {timeout_s:g} seconds"
+                )
             raise RuntimeError(f"replay failed: {raw_text}")
         return status, raw_text.encode("utf-8")
 
@@ -221,13 +233,12 @@ class XHRStreamTransport:
             timeout_s=timeout_s,
             rid=rid,
         )
-        await page.evaluate(STREAMING_INIT_JS, init_args)
-
         deadline = asyncio.get_running_loop().time() + timeout_s
         status_sent = False
         is_terminal = False
 
         try:
+            await page.evaluate(STREAMING_INIT_JS, init_args)
             while not is_terminal:
                 if page.is_closed() is True:
                     raise RuntimeError("Browser page closed during streaming")
@@ -250,14 +261,16 @@ class XHRStreamTransport:
                     status = int(str(event.get("status") or 0))
                     yield ("status", status)
                     status_sent = True
-                    deadline = asyncio.get_running_loop().time() + timeout_s
                 elif etype == "chunk":
                     text = str(event.get("text") or "")
                     if text:
                         yield ("chunk", text.encode("utf-8"))
-                        deadline = asyncio.get_running_loop().time() + timeout_s
                 elif etype == "error":
                     message = str(event.get("message") or "unknown error")
+                    if message == "timeout":
+                        raise RequestError(
+                            504, f"Generation request exceeded {timeout_s:g} seconds"
+                        )
                     raise RuntimeError(f"streaming request failed: {message}")
                 elif etype in ("done", "aborted"):
                     while not queue.empty():
@@ -272,9 +285,13 @@ class XHRStreamTransport:
                     is_terminal = True
                     break
             if not status_sent:
-                raise RuntimeError("streaming request timeout: no response status")
+                raise RequestError(
+                    504, "Generation request timed out: no response status"
+                )
             if not is_terminal:
-                raise TimeoutError("streaming response timed out before completion")
+                raise RequestError(
+                    504, "Generation response timed out before completion"
+                )
         finally:
             self._queues.pop(rid, None)
             with suppress(Exception):

@@ -32,7 +32,6 @@ from aistudio_api.domain.errors import (
     RequestError,
     SessionExpiredError,
     UsageLimitExceeded,
-    is_browser_session_hang_error,
     is_transient_rpc_error,
     parse_upstream_grpc_error,
 )
@@ -89,6 +88,8 @@ def clean_upstream_error_message(raw_msg: str) -> str:
 
 def classify_gemini_error_payload(exc: Exception) -> tuple[int, str, str]:
     """Extract standard Gemini HTTP status code, message, and status string from an exception."""
+    if isinstance(exc, TimeoutError):
+        return 504, "Generation request timed out.", "DEADLINE_EXCEEDED"
     if isinstance(exc, SessionExpiredError):
         return (
             401,
@@ -115,6 +116,7 @@ def classify_gemini_error_payload(exc: Exception) -> tuple[int, str, str]:
             429: "RESOURCE_EXHAUSTED",
             500: "INTERNAL",
             503: "UNAVAILABLE",
+            504: "DEADLINE_EXCEEDED",
         }
         return (
             status,
@@ -132,6 +134,7 @@ def classify_gemini_error_payload(exc: Exception) -> tuple[int, str, str]:
             429: "RESOURCE_EXHAUSTED",
             500: "INTERNAL",
             503: "UNAVAILABLE",
+            504: "DEADLINE_EXCEEDED",
         }
         return (
             status,
@@ -161,6 +164,18 @@ async def handle_attempt_exception(
     account_svc = runtime_state.account_service
     active_acc = account_svc.get_active_account() if account_svc else None
     failed_id = active_acc.id if active_acc else None
+
+    if isinstance(exc, TimeoutError):
+        logger.warning(
+            "生成请求超时，已终止请求，保留当前账号且不重试: model=%s", target_model
+        )
+        raise HTTPException(
+            504,
+            detail={
+                "message": "Generation request timed out.",
+                "type": "upstream_timeout",
+            },
+        ) from exc
 
     if isinstance(exc, ValueError):
         raise HTTPException(
@@ -245,23 +260,6 @@ async def handle_attempt_exception(
         client.clear_templates()
         return True
 
-    if is_browser_session_hang_error(exc):
-        logger.warning(
-            "模板或 BotGuard 捕获超时 (%d/%d): %s，切换账号重试",
-            attempt + 1,
-            MAX_RETRIES,
-            exc,
-        )
-        client.clear_templates()
-        if not has_yielded_data and await try_switch_account(
-            model=target_model, failed_account_id=failed_id, is_auth_error=False
-        ):
-            logger.info("已切换账号重试 (%d/%d)", attempt + 1, MAX_RETRIES)
-            return True
-        if attempt < 2 and not has_yielded_data:
-            if client._session is not None:
-                await client._session._close_internal()
-            return True
     if isinstance(exc, RequestError):
         clean_msg = clean_upstream_error_message(str(exc))
         status_code = exc.status if exc.status > 0 else 500

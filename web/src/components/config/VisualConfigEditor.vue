@@ -204,6 +204,7 @@ function handleResetDefaults() {
       dump_requests: false,
     }
     const doc: ParsedConfigYaml = {
+      ...parsedConfig.value,
       api_keys: currentApiKeys,
       logging: currentLogging,
       model_defaults: {

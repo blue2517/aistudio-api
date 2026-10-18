@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from aistudio_api.domain.errors import RequestError
 from aistudio_api.infrastructure.browser.cdp_client import CDPPage
 from aistudio_api.infrastructure.browser.scripts import (
     STREAM_CLEANUP_JS,
@@ -85,7 +86,7 @@ async def test_transport_native_cdp_binding_stream_push():
 
 @pytest.mark.asyncio
 async def test_transport_streaming_timeout_raises():
-    """Verify stream timeout before completion explicitly raises TimeoutError."""
+    """Verify stream timeout before completion explicitly returns a gateway timeout."""
     transport = XHRStreamTransport()
     page = MagicMock(spec=CDPPage)
     binding_listener = None
@@ -117,7 +118,7 @@ async def test_transport_streaming_timeout_raises():
 
     push_task = asyncio.create_task(push_status_only())
     with pytest.raises(
-        TimeoutError, match="streaming response timed out before completion"
+        RequestError, match="HTTP 504: Generation response timed out before completion"
     ):
         async for _ in transport.send_streaming_request(
             page,

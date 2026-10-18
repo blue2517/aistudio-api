@@ -4,6 +4,7 @@ import type {
   RotationStatusResponse,
   ClearCooldownRequest,
   SystemConfig,
+  RequestTimeoutConfig,
   ApiKeyItem,
   CreateApiKeyRequest,
   UpdateApiKeyRequest,
@@ -53,6 +54,13 @@ export const systemApi = {
     return request('/config/yaml', {
       method: 'PUT',
       body: JSON.stringify({ yaml_content: yamlContent }),
+    })
+  },
+
+  updateRequestTimeouts(req: RequestTimeoutConfig): Promise<RequestTimeoutConfig & { ok: boolean }> {
+    return request('/config/timeouts', {
+      method: 'PUT',
+      body: JSON.stringify(req),
     })
   },
 
